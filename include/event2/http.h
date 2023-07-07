@@ -515,6 +515,12 @@ void evhttp_set_write_timeout_tv(struct evhttp *http, const struct timeval* tv);
 EVENT2_EXPORT_SYMBOL
 int evhttp_set_flags(struct evhttp *http, int flags);
 
+/**
+ * Accept request for bufferevent
+*/
+EVENT2_EXPORT_SYMBOL
+void evhttp_get_request_bufferevent(struct evhttp *http, struct bufferevent* bev);
+
 /* Request/Response functionality */
 
 /**

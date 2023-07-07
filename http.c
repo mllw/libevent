@@ -4737,6 +4737,145 @@ evhttp_get_request(struct evhttp *http, evutil_socket_t fd,
 		evhttp_connection_free(evcon);
 }
 
+static struct evhttp_connection*
+evhttp_get_request_connection_bufferevent(
+	struct evhttp* http,
+	struct bufferevent* bev)
+{
+	struct evhttp_connection *evcon;
+	struct sockaddr_storage addr = {0};
+	struct sockaddr *sa = NULL;
+	ev_socklen_t salen = 0;
+	evutil_socket_t fd;
+
+	sa = (struct sockaddr *)bufferevent_socket_get_conn_address_(bev);
+	fd = bufferevent_getfd(bev);
+	if(sa->sa_family == AF_INET) {
+		salen = sizeof(struct sockaddr_in);
+	}else if(sa->sa_family == AF_INET6) {
+		salen = sizeof(struct sockaddr_in6);
+	}
+
+#ifdef EVENT__HAVE_STRUCT_SOCKADDR_UN
+	if (sa->sa_family == AF_UNIX) {
+		struct sockaddr_un *sa_un = (struct sockaddr_un *)sa;
+		sa_un->sun_path[0] = '\0';
+	}
+#endif
+
+#ifndef _WIN32
+	if (sa->sa_family == AF_UNIX) {
+		struct sockaddr_un *sockaddr = (struct sockaddr_un *)sa;
+
+		event_debug(("%s: new request from unix socket on "
+			EV_SOCK_FMT"\n", __func__, EV_SOCK_ARG(fd)));
+
+		/* we need a connection object to put the http request on */
+		if (!bev && http->bevcb != NULL) {
+			bev = (*http->bevcb)(http->base, http->bevcbarg);
+		}
+
+		evcon = evhttp_connection_base_bufferevent_unix_new(http->base,
+			bev, sockaddr->sun_path);
+	}
+	else
+#endif
+	{
+		char *hostname = NULL, *portname = NULL;
+
+		name_from_addr(sa, salen, &hostname, &portname);
+		if (hostname == NULL || portname == NULL) {
+			if (hostname) mm_free(hostname);
+			if (portname) mm_free(portname);
+			return (NULL);
+		}
+
+		event_debug(("%s: new request from %s:%s on "EV_SOCK_FMT"\n",
+			__func__, hostname, portname, EV_SOCK_ARG(fd)));
+
+		/* we need a connection object to put the http request on */
+		if (!bev && http->bevcb != NULL) {
+			bev = (*http->bevcb)(http->base, http->bevcbarg);
+		}
+		evcon = evhttp_connection_base_bufferevent_new(
+			http->base, NULL, bev, hostname, atoi(portname));
+		mm_free(hostname);
+		mm_free(portname);
+	}
+	if (evcon == NULL)
+		return (NULL);
+
+	evcon->max_headers_size = http->default_max_headers_size;
+	evcon->max_body_size = http->default_max_body_size;
+	if (http->flags & EVHTTP_SERVER_LINGERING_CLOSE)
+		evcon->flags |= EVHTTP_CON_LINGERING_CLOSE;
+
+	evcon->flags |= EVHTTP_CON_INCOMING;
+	evcon->state = EVCON_READING_FIRSTLINE;
+
+	return (evcon);
+
+// err:
+// 	evhttp_connection_free(evcon);
+// 	return (NULL);
+} 
+
+/**
+ * Accept request for bufferevent
+*/
+void evhttp_get_request_bufferevent(struct evhttp *http, struct bufferevent* bev)
+{
+
+	struct evhttp_connection *evcon;
+
+	evcon = evhttp_get_request_connection_bufferevent(http, bev);
+	if (evcon == NULL) {
+		event_warn("%s: cannot get connection on bufferevent"EV_SOCK_FMT,
+		    __func__, EV_SOCK_ARG(bufferevent_getfd(bev)));
+		
+		return;
+	}
+
+	/* the timeout can be used by the server to close idle connections */
+	if (evutil_timerisset(&http->timeout_read))
+		evhttp_connection_set_read_timeout_tv(evcon,  &http->timeout_read);
+	if (evutil_timerisset(&http->timeout_write))
+		evhttp_connection_set_write_timeout_tv(evcon, &http->timeout_write);
+
+	/*
+	 * if we want to accept more than one request on a connection,
+	 * we need to know which http server it belongs to.
+	 */
+	evcon->http_server = http;
+	evcon->ext_method_cmp = http->ext_method_cmp;
+	TAILQ_INSERT_TAIL(&http->connections, evcon, next);
+	http->connection_cnt++;
+
+	/* send "service unavailable" if we've reached the connection limit */
+	if (http->connection_max && http->connection_max < http->connection_cnt) {
+		struct evhttp_request *req;
+
+		if ((req = evhttp_request_new(evhttp_handle_request, http)) == NULL) {
+			evhttp_connection_free(evcon);
+			return;
+		}
+
+		req->evcon = evcon;	/* the request owns the connection */
+		req->flags |= EVHTTP_REQ_OWN_CONNECTION;
+		req->kind = EVHTTP_REQUEST;
+		/* note, req->remote_host not needed since we don't read */
+
+		TAILQ_INSERT_TAIL(&evcon->requests, req, next);
+
+		/* send error to client */
+		evcon->state = EVCON_WRITING;
+		bufferevent_enable(evcon->bufev, EV_READ); /* enable close events */
+		evhttp_send_error(req, HTTP_SERVUNAVAIL, NULL);
+
+	} else if (evhttp_associate_new_request_with_connection(evcon) == -1)
+		evhttp_connection_free(evcon);
+}
+
 
 /*
  * Network helper functions that we do not want to export to the rest of
