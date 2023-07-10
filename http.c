@@ -4740,21 +4740,13 @@ evhttp_get_request(struct evhttp *http, evutil_socket_t fd,
 static struct evhttp_connection*
 evhttp_get_request_connection_bufferevent(
 	struct evhttp* http,
-	struct bufferevent* bev)
+	struct bufferevent* bev,
+	struct sockaddr *sa, ev_socklen_t salen
+	)
 {
 	struct evhttp_connection *evcon;
-	struct sockaddr_storage addr = {0};
-	struct sockaddr *sa = NULL;
-	ev_socklen_t salen = 0;
-	evutil_socket_t fd;
-
-	sa = (struct sockaddr *)bufferevent_socket_get_conn_address_(bev);
-	fd = bufferevent_getfd(bev);
-	if(sa->sa_family == AF_INET) {
-		salen = sizeof(struct sockaddr_in);
-	}else if(sa->sa_family == AF_INET6) {
-		salen = sizeof(struct sockaddr_in6);
-	}
+	
+	evutil_socket_t fd = bufferevent_getfd(bev);
 
 #ifdef EVENT__HAVE_STRUCT_SOCKADDR_UN
 	if (sa->sa_family == AF_UNIX) {
@@ -4823,12 +4815,16 @@ evhttp_get_request_connection_bufferevent(
 /**
  * Accept request for bufferevent
 */
-void evhttp_get_request_bufferevent(struct evhttp *http, struct bufferevent* bev)
+void 
+evhttp_get_request_bufferevent(
+	struct evhttp *http, struct bufferevent* bev,
+	struct sockaddr *sa, ev_socklen_t salen
+)
 {
 
 	struct evhttp_connection *evcon;
 
-	evcon = evhttp_get_request_connection_bufferevent(http, bev);
+	evcon = evhttp_get_request_connection_bufferevent(http, bev,sa,salen);
 	if (evcon == NULL) {
 		event_warn("%s: cannot get connection on bufferevent"EV_SOCK_FMT,
 		    __func__, EV_SOCK_ARG(bufferevent_getfd(bev)));

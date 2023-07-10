@@ -519,7 +519,7 @@ int evhttp_set_flags(struct evhttp *http, int flags);
  * Accept request for bufferevent
 */
 EVENT2_EXPORT_SYMBOL
-void evhttp_get_request_bufferevent(struct evhttp *http, struct bufferevent* bev);
+void evhttp_get_request_bufferevent(struct evhttp *http, struct bufferevent* bev, struct sockaddr *sa, ev_socklen_t salen);
 
 /* Request/Response functionality */
 
